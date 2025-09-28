@@ -476,17 +476,18 @@ class MailInvestigator(QMainWindow):
         auth_headers = []
         other_headers = []
 
-        for key, value in msg.items():
-            header_line = f"{key}: {value}"
+        # Use msg.keys() and msg.get() to access headers
+        for key in msg.keys():
+            value = msg.get(key, "")
 
             if key.lower() in ['from', 'to', 'cc', 'bcc', 'subject', 'date', 'message-id']:
-                core_headers.append(header_line)
+                core_headers.append(f"{key}: {value}")
             elif key.lower() == 'received':
-                received_headers.append(header_line)
+                received_headers.append(f"{key}: {value}")
             elif key.lower() in ['authentication-results', 'dkim-signature', 'spf', 'dmarc']:
-                auth_headers.append(header_line)
+                auth_headers.append(f"{key}: {value}")
             else:
-                other_headers.append(header_line)
+                other_headers.append(f"{key}: {value}")
 
         # Add sections with clear separation
         if core_headers:
@@ -517,39 +518,7 @@ class MailInvestigator(QMainWindow):
         formatted.append("END OF HEADERS")
         formatted.append("=" * 60)
 
-    def open_eml(self):
-        """Open and parse an .eml file."""
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select RFC-822 message", "",
-            "E-mail files (*.eml);;All files (*.*)"
-        )
-
-        if not path:
-            return
-
-        try:
-            # Validate file
-            is_valid, error_msg = FileValidator.validate_email_file(path)
-            if not is_valid:
-                MessageBoxHelper.show_error(self, "Invalid File", error_msg)
-                return
-
-            # Read and parse file
-            with open(path, "rb") as fh:
-                raw = fh.read()
-
-            # Extract file metadata
-            file_meta = FileMetadata(path, raw)
-            file_meta.extract_metadata()
-            self.file_metadata = file_meta.get_metadata()
-
-            # Parse email
-            self._parse_email(raw)
-            self.status_label.setText(f"Loaded: {Path(path).name}")
-
-        except Exception as exc:
-            MessageBoxHelper.show_error(self, "Error", str(exc))
-            print(traceback.format_exc())
+        return "\n".join(formatted)
 
     def parse_clipboard(self):
         """Parse email content from clipboard."""
