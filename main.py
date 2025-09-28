@@ -520,6 +520,40 @@ class MailInvestigator(QMainWindow):
 
         return "\n".join(formatted)
 
+    def open_eml(self):
+        """Open and parse an .eml file."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select RFC-822 message", "",
+            "E-mail files (*.eml);;All files (*.*)"
+        )
+
+        if not path:
+            return
+
+        try:
+            # Validate file
+            is_valid, error_msg = FileValidator.validate_email_file(path)
+            if not is_valid:
+                MessageBoxHelper.show_error(self, "Invalid File", error_msg)
+                return
+
+            # Read and parse file
+            with open(path, "rb") as fh:
+                raw = fh.read()
+
+            # Extract file metadata
+            file_meta = FileMetadata(path, raw)
+            file_meta.extract_metadata()
+            self.file_metadata = file_meta.get_metadata()
+
+            # Parse email
+            self._parse_email(raw)
+            self.status_label.setText(f"Loaded: {Path(path).name}")
+
+        except Exception as exc:
+            MessageBoxHelper.show_error(self, "Error", str(exc))
+            print(traceback.format_exc())
+
     def parse_clipboard(self):
         """Parse email content from clipboard."""
         clip = QApplication.clipboard()
