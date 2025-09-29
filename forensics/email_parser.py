@@ -14,7 +14,7 @@ from .core import hash_bytes, extract_urls, extract_email_addresses, extract_ip_
 class EmailParser:
     """Handles email parsing and basic analysis."""
 
-    def __init__(self, raw_email_bytes: bytes):
+    def __init__(self, raw_email_bytes: bytes = None):
         self.raw_email = raw_email_bytes
         self.message = None
         self.attachments = []
@@ -24,6 +24,8 @@ class EmailParser:
     def parse(self):
         """Parse the email message."""
         try:
+            if not self.raw_email:
+                return False
             self.message = email.message_from_bytes(self.raw_email, policy=policy.default)
             self._extract_metadata()
             self._extract_attachments()
@@ -31,10 +33,16 @@ class EmailParser:
             return True
         except Exception as e:
             print(f"Error parsing email: {e}")
+    def parse_from_string(self, raw_email_string: str):
+        """Parse email from string format (for loading from database)."""
+        try:
+            self.raw_email = raw_email_string.encode('utf-8', errors='ignore')
+            return self.parse()
+        except Exception as e:
+            print(f"Error parsing email from string: {e}")
             return False
 
     def _extract_metadata(self):
-        """Extract basic email metadata."""
         if not self.message:
             return
 
@@ -133,7 +141,17 @@ class EmailParser:
 
         from .core import parse_received_headers
         received_headers = self.message.get_all("Received", [])
-        return parse_received_headers(received_headers)
+        
+        # Ensure all received headers are strings
+        string_headers = []
+        for header in received_headers:
+            if isinstance(header, dict):
+                header = header.get('raw', '') if 'raw' in header else str(header)
+            elif not isinstance(header, str):
+                header = str(header) if header is not None else ''
+            string_headers.append(header)
+        
+        return parse_received_headers(string_headers)
 
     def get_authentication_results(self) -> dict:
         """Get authentication results."""
@@ -168,6 +186,13 @@ class EmailParser:
 
         from .core import detect_time_anomalies
         date_header = self.message.get('Date')
+        
+        # Handle case where date_header might be a dictionary or other non-string type
+        if isinstance(date_header, dict):
+            date_header = date_header.get('raw', '') if 'raw' in date_header else str(date_header)
+        elif not isinstance(date_header, str):
+            date_header = str(date_header) if date_header is not None else ''
+        
         received_headers = self.get_received_headers()
         return detect_time_anomalies(date_header, received_headers)
 

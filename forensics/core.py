@@ -95,6 +95,61 @@ def extract_cid_urls(text: str) -> list:
     return list(set(cid_matches))
 
 
+def extract_phone_numbers(text: str) -> list:
+    """Extract phone numbers from text.
+    
+    Supports various formats:
+    - (123) 456-7890
+    - 123-456-7890
+    - 123.456.7890
+    - 1234567890
+    - +1 123 456 7890
+    """
+    phone_patterns = [
+        r'\(\d{3}\)\s*\d{3}[-.]?\d{4}',  # (123) 456-7890, (123) 456.7890
+        r'\b\d{3}[-.]?\d{3}[-.]?\d{4}\b',  # 123-456-7890, 123.456.7890, 1234567890
+        r'\+\d{1,3}\s*\d{3}\s*\d{3}\s*\d{4}',  # +1 123 456 7890
+    ]
+    
+    phone_numbers = []
+    for pattern in phone_patterns:
+        matches = re.findall(pattern, text)
+        phone_numbers.extend(matches)
+    
+    return list(set(phone_numbers))
+
+
+def extract_names(text: str) -> list:
+    """Extract potential names from text.
+    
+    This is a basic extraction that looks for:
+    - Capitalized words (potential first/last names)
+    - Common name patterns
+    """
+    # Look for capitalized words (2+ letters) that might be names
+    name_pattern = r'\b[A-Z][a-z]+\s+[A-Z][a-z]+\b'  # First Last
+    names = re.findall(name_pattern, text)
+    
+    # Also look for single capitalized words that might be first names
+    single_name_pattern = r'\b[A-Z][a-z]{2,}\b'
+    single_names = re.findall(single_name_pattern, text)
+    
+    # Filter out common words that aren't names
+    common_words = {
+        'The', 'This', 'That', 'These', 'Those', 'From', 'To', 'Subject',
+        'Date', 'Sent', 'Received', 'Cc', 'Bcc', 'Attachment', 'Please',
+        'Thank', 'Thanks', 'Best', 'Regards', 'Sincerely', 'Hello', 'Dear',
+        'Yours', 'Truly', 'Cordially', 'Respectfully', 'Faithfully'
+    }
+    
+    filtered_single_names = [name for name in single_names if name not in common_words]
+    
+    # Combine both types of potential names
+    all_names = names + filtered_single_names
+    
+    return list(set(all_names))
+
+
 # ---------- Header Parsing Helpers ------------------------------------------
 def parse_received_headers(received_headers: list) -> list:
     """Parse Received headers and extract hop information."""
@@ -117,10 +172,14 @@ def parse_received_headers(received_headers: list) -> list:
         if ips:
             hop['ip'] = ips[0]
 
-        # Extract timestamp
+        # Extract timestamp - multiple patterns for different formats
         timestamp_patterns = [
             r';\s*(.+?)(?:\s*\(|$)',  # Standard format: ; timestamp (comments)
-            r'\s+(\w{3},\s+\d{1,2}\s+\w{3}\s+\d{4}\s+\d{2}:\d{2}:\d{2}\s+[+-]?\d{4})',
+            r'\s+(\w{3},\s+\d{1,2}\s+\w{3}\s+\d{4}\s+\d{2}:\d{2}:\d{2}\s+[+-]?\d{4})',  # RFC 2822
+            r'\s+(\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})',  #asctime format
+            r'\s+(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:\s*[+-]?\d{4})?)',  # ISO format
+            r'\s+(\d{2}/\d{2}/\d{4}\s+\d{2}:\d{2}:\d{2})',  # US format
+            r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)',  # ISO 8601
         ]
 
         for pattern in timestamp_patterns:
@@ -462,7 +521,21 @@ def detect_time_anomalies(date_header: str, received_headers: list) -> list:
     try:
         # Parse Date header
         if date_header:
-            date_time = email.utils.parsedate_to_datetime(date_header)
+            try:
+                # Try to parse the date header with email.utils
+                date_time = email.utils.parsedate_to_datetime(date_header)
+            except Exception as parse_error:
+                # Try alternative parsing methods
+                try:
+                    # Try parsing with dateutil.parser as fallback
+                    from dateutil import parser
+                    date_time = parser.parse(date_header)
+                except ImportError:
+                    anomalies.append(f"Could not parse date header (dateutil not available): {date_header}")
+                    return anomalies
+                except Exception as fallback_error:
+                    anomalies.append(f"Could not parse date header '{date_header}': {str(parse_error)}")
+                    return anomalies
 
             # Check if date is in future or too far in past
             now = datetime.datetime.now(datetime.timezone.utc)
@@ -473,15 +546,39 @@ def detect_time_anomalies(date_header: str, received_headers: list) -> list:
 
             # Compare with first Received header
             if received_headers:
-                first_received = parse_received_headers([received_headers[0]])[0]
-                if first_received['timestamp']:
-                    try:
-                        received_time = email.utils.parsedate_to_datetime(first_received['timestamp'])
-                        time_diff = abs((date_time - received_time).total_seconds())
-                        if time_diff > 86400:  # More than 24 hours difference
-                            anomalies.append(f"Large time difference between Date header and first Received: {time_diff/3600:.1f} hours")
-                    except:
-                        anomalies.append("Could not parse first Received timestamp")
+                try:
+                    first_received = parse_received_headers([received_headers[0]])[0]
+                    timestamp = first_received['timestamp']
+                    
+                    # Handle case where timestamp might not be a string
+                    if timestamp:
+                        if isinstance(timestamp, dict):
+                            timestamp = timestamp.get('raw', '') if 'raw' in timestamp else str(timestamp)
+                        elif not isinstance(timestamp, str):
+                            timestamp = str(timestamp) if timestamp is not None else ''
+                        
+                        if timestamp:  # Only try to parse if we have a non-empty string
+                            try:
+                                # Try to parse the timestamp with email.utils
+                                received_time = email.utils.parsedate_to_datetime(timestamp)
+                                time_diff = abs((date_time - received_time).total_seconds())
+                                if time_diff > 86400:  # More than 24 hours difference
+                                    anomalies.append(f"Large time difference between Date header and first Received: {time_diff/3600:.1f} hours")
+                            except Exception as parse_error:
+                                # Try alternative parsing methods
+                                try:
+                                    # Try parsing with dateutil.parser as fallback
+                                    from dateutil import parser
+                                    received_time = parser.parse(timestamp)
+                                    time_diff = abs((date_time - received_time).total_seconds())
+                                    if time_diff > 86400:  # More than 24 hours difference
+                                        anomalies.append(f"Large time difference between Date header and first Received: {time_diff/3600:.1f} hours")
+                                except ImportError:
+                                    anomalies.append(f"Could not parse timestamp (dateutil not available): {timestamp}")
+                                except Exception as fallback_error:
+                                    anomalies.append(f"Could not parse timestamp '{timestamp}': {str(parse_error)}")
+                except Exception as e:
+                    anomalies.append(f"Could not parse first Received timestamp: {str(e)}")
 
     except Exception as e:
         anomalies.append(f"Error parsing Date header: {str(e)}")
